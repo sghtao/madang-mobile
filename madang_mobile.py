@@ -5,127 +5,145 @@ import datetime
 import time
 
 # ==========================================
-# 1. 사용자 정보 설정 (수정 필수!)
+# 1. 사용자 기본 정보 (본인 이름 필수 수정!)
 # ==========================================
-my_name = "본인_이름"  # <--- 여기에 본인 이름을 적으세요!
+my_name = "본인_이름"  # <--- 여기를 본인 이름으로 바꾸세요!
 my_address = "인천광역시 계양구 계산새로 109"
 my_phone = "010-1234-5678"
 
 # ==========================================
-# 2. DuckDB 연결 및 초기 세팅 (pymysql 대체)
+# 2. DuckDB 연결 및 데이터 자동 보정
 # ==========================================
-# 파일 기반 DB라서 클라우드에서도 작동합니다.
 con = duckdb.connect(database='madang.db', read_only=False)
 
-# 테이블이 없으면 생성 (초기화 로직)
+# 테이블 생성 (없을 경우)
 con.execute("""
 CREATE TABLE IF NOT EXISTS Book (bookid INTEGER, bookname VARCHAR, publisher VARCHAR, price INTEGER);
 CREATE TABLE IF NOT EXISTS Customer (custid INTEGER, name VARCHAR, address VARCHAR, phone VARCHAR);
 CREATE TABLE IF NOT EXISTS Orders (orderid INTEGER, custid INTEGER, bookid INTEGER, saleprice INTEGER, orderdate VARCHAR);
 """)
 
-# 데이터가 비어있으면 기초 데이터 + 내 정보 넣기
-if con.execute("SELECT count(*) FROM Customer").fetchone()[0] == 0:
-    # (1) 책 데이터
-    books_data = [
-        (1, '축구의 역사', '굿스포츠', 7000), (2, '축구아는 여자', '나무수', 13000),
-        (3, '축구의 이해', '대한미디어', 22000), (4, '골프 바이블', '대한미디어', 35000),
-        (5, '피겨 교본', '굿스포츠', 8000), (6, '역도 단계별기술', '굿스포츠', 6000),
-        (7, '야구의 추억', '이상미디어', 20000), (8, '야구를 부탁해', '이상미디어', 13000),
-        (9, '올림픽 이야기', '삼성당', 7500), (10, 'Olympic Champions', 'Pearson', 13000)
-    ]
-    con.executemany("INSERT INTO Book VALUES (?, ?, ?, ?)", books_data)
+# [핵심] 내 이름이 DB에 있는지 확인하고, 없으면 '자동으로' 넣어주는 로직
+# 이렇게 하면 기존 DB가 있어도 내 정보가 안전하게 들어갑니다.
+check_me = con.execute(f"SELECT count(*) FROM Customer WHERE name = '{my_name}'").fetchone()[0]
 
-    # (2) 고객 데이터 (1번 박지성을 '나'로 변경하여 입력!)
-    # 교수님 과제가 '박지성 말고 나를 등록'이므로 1번에 본인을 넣습니다.
-    customers_data = [
-        (1, my_name, my_address, my_phone), 
-        (2, '김연아', '대한민국 서울', '000-6000-0001'), (3, '장미란', '대한민국 강원도', '000-7000-0001'),
-        (4, '추신수', '미국 클리블랜드', '000-8000-0001'), (5, '박세리', '대한민국 대전', None)
-    ]
-    con.executemany("INSERT INTO Customer VALUES (?, ?, ?, ?)", customers_data)
-
-    # (3) 주문 데이터 (기본 + 내 구매 내역)
-    orders_data = [
-        (1, 1, 1, 6000, '2014-07-01'), (2, 1, 3, 21000, '2014-07-03'),
-        (3, 2, 5, 8000, '2014-07-03'), (4, 3, 6, 6000, '2014-07-04'),
-        (5, 4, 7, 20000, '2014-07-05'), (6, 1, 2, 12000, '2014-07-07'),
-        (7, 4, 8, 13000, '2014-07-07'), (8, 3, 10, 12000, '2014-07-08'),
-        (9, 2, 10, 7000, '2014-07-09'), (10, 3, 8, 13000, '2014-07-10')
-    ]
-    con.executemany("INSERT INTO Orders VALUES (?, ?, ?, ?, ?)", orders_data)
+if check_me == 0:
+    # 가장 큰 번호(custid) 찾아서 +1 (자동 번호 부여)
+    max_id = con.execute("SELECT MAX(custid) FROM Customer").fetchone()[0]
+    new_id = 1 if max_id is None else max_id + 1
     
-    # [과제] 내가 책 하나 산 거 등록 (오늘 날짜)
-    today = datetime.date.today().strftime("%Y-%m-%d")
-    con.execute(f"INSERT INTO Orders VALUES (11, 1, 10, 13000, '{today}')")
+    # 나를 고객으로 등록
+    con.execute(f"INSERT INTO Customer VALUES ({new_id}, '{my_name}', '{my_address}', '{my_phone}')")
+    
+    # 내친김에 책 구매 내역도 하나 등록 (오늘 날짜)
+    dt = datetime.date.today().strftime("%Y-%m-%d")
+    
+    # 주문번호 따기
+    max_oid = con.execute("SELECT MAX(orderid) FROM Orders").fetchone()[0]
+    new_oid = 1 if max_oid is None else max_oid + 1
+    
+    # 10번 책(Olympic Champions) 구매 등록
+    con.execute(f"INSERT INTO Orders VALUES ({new_oid}, {new_id}, 10, 13000, '{dt}')")
+    print(f"✅ {my_name}님 자동 등록 완료!")
 
 # ==========================================
-# 3. 마당 매니저 UI (교수님 코드 로직 반영)
+# 3. UI 구성 (신규 고객 등록 기능 추가)
 # ==========================================
-st.title("📱 모바일 마당 매니저")
+st.title(f"📱 마당 매니저 Pro")
 
-# 책 리스트 가져오기 (Selectbox용)
-books_df = con.execute("SELECT bookid, bookname FROM Book").df()
-book_options = [f"{row['bookid']},{row['bookname']}" for idx, row in books_df.iterrows()]
+# --- [사이드바] 신규 고객 직접 등록 기능 ---
+with st.sidebar:
+    st.header("➕ 신규 고객 등록")
+    with st.form("new_user_form"):
+        new_name = st.text_input("이름")
+        new_addr = st.text_input("주소")
+        new_ph = st.text_input("전화번호")
+        
+        submitted = st.form_submit_button("고객 추가하기")
+        if submitted and new_name:
+            # 중복 확인
+            cnt = con.execute(f"SELECT count(*) FROM Customer WHERE name='{new_name}'").fetchone()[0]
+            if cnt > 0:
+                st.error("이미 등록된 이름입니다.")
+            else:
+                # ID 따기
+                mx_id = con.execute("SELECT MAX(custid) FROM Customer").fetchone()[0]
+                nxt_id = mx_id + 1 if mx_id else 1
+                con.execute(f"INSERT INTO Customer VALUES ({nxt_id}, '{new_name}', '{new_addr}', '{new_ph}')")
+                st.success(f"{new_name}님 등록 완료!")
+                time.sleep(1)
+                st.rerun() # 새로고침
 
-tab1, tab2 = st.tabs(["고객 조회", "거래 입력"])
+# --- [메인 화면] ---
+tab1, tab2 = st.tabs(["🔍 고객 조회", "💰 거래 입력"])
 
-# --- [탭 1] 고객 조회 ---
+# 책 리스트 준비
+books_df = con.execute("SELECT bookid, bookname, price FROM Book").df()
+# 보기 좋게 'ID: 제목 (가격)' 형식으로 변환
+book_options = [f"{row['bookid']}: {row['bookname']} ({row['price']}원)" for idx, row in books_df.iterrows()]
+
 with tab1:
-    search_name = st.text_input("고객명 검색 (예: 본인이름)")
-    if search_name:
-        sql = f"""
-            SELECT c.name, b.bookname, o.orderdate, o.saleprice 
-            FROM Customer c, Book b, Orders o 
-            WHERE c.custid = o.custid AND o.bookid = b.bookid AND c.name = '{search_name}'
-        """
-        result = con.execute(sql).df()
+    st.subheader("고객 및 구매 내역 조회")
+    # 기본값으로 내 이름을 넣어둡니다.
+    search_input = st.text_input("고객명 검색", value=my_name)
+    
+    if search_input:
+        # 고객 정보 확인
+        cust_data = con.execute(f"SELECT * FROM Customer WHERE name = '{search_input}'").df()
         
-        if not result.empty:
-            st.dataframe(result)
+        if not cust_data.empty:
+            st.success(f"검색 결과: {search_input} (ID: {cust_data['custid'][0]})")
+            st.table(cust_data) # 고객 정보 표로 보여주기
+            
+            st.write("📘 구매 기록")
+            sql_log = f"""
+            SELECT o.orderid, b.bookname, o.saleprice, o.orderdate 
+            FROM Orders o 
+            JOIN Book b ON o.bookid = b.bookid 
+            JOIN Customer c ON o.custid = c.custid
+            WHERE c.name = '{search_input}'
+            ORDER BY o.orderdate DESC
+            """
+            log_df = con.execute(sql_log).df()
+            if not log_df.empty:
+                st.dataframe(log_df, use_container_width=True)
+            else:
+                st.info("구매 기록이 없습니다.")
         else:
-            st.warning("해당 고객의 구매 내역이 없습니다.")
+            st.warning("등록되지 않은 고객입니다. 왼쪽 사이드바에서 등록해주세요!")
 
-# --- [탭 2] 거래 입력 ---
 with tab2:
-    st.subheader("새로운 거래 추가")
+    st.subheader("새로운 책 판매 (주문 입력)")
     
-    # 1. 고객 정보 확인 (이름으로 검색해서 ID 찾기)
-    input_name = st.text_input("구매 고객명", value=my_name) # 기본값 내 이름
+    # 1. 고객 선택 (이름 입력하면 자동 확인)
+    target_name = st.text_input("구매자 이름", value=my_name, key="order_name")
     
-    if input_name:
-        cust_info = con.execute(f"SELECT custid FROM Customer WHERE name = '{input_name}'").fetchone()
-        
-        if cust_info:
-            current_custid = cust_info[0]
-            st.success(f"고객 확인됨: {input_name} (ID: {current_custid})")
-            
-            # 2. 책 선택
-            select_book = st.selectbox("구매 서적:", book_options)
-            
-            if select_book:
-                bookid = select_book.split(",")[0]
-                
-                # 가격 자동 입력 (책 테이블에서 가져오기)
-                price_info = con.execute(f"SELECT price FROM Book WHERE bookid={bookid}").fetchone()
-                default_price = price_info[0] if price_info else 0
-                
-                price = st.number_input("금액", value=default_price)
-                
-                if st.button('거래 입력'):
-                    # 주문번호 자동 생성
-                    max_order = con.execute("SELECT MAX(orderid) FROM Orders").fetchone()[0]
-                    new_orderid = max_order + 1 if max_order else 1
-                    
-                    dt = datetime.date.today().strftime("%Y-%m-%d")
-                    
-                    insert_sql = f"""
-                    INSERT INTO Orders (orderid, custid, bookid, saleprice, orderdate) 
-                    VALUES ({new_orderid}, {current_custid}, {bookid}, {price}, '{dt}')
-                    """
-                    con.execute(insert_sql)
-                    st.success('거래가 입력되었습니다.')
-                    time.sleep(1)
-                    st.rerun() # 화면 갱신
+    target_custid = None
+    if target_name:
+        chk = con.execute(f"SELECT custid FROM Customer WHERE name='{target_name}'").fetchone()
+        if chk:
+            target_custid = chk[0]
+            st.caption(f"✅ 고객 확인됨: ID {target_custid}")
         else:
-            st.error("등록되지 않은 고객입니다.")
+            st.error("존재하지 않는 고객입니다. 먼저 등록해주세요.")
+    
+    # 2. 책 선택
+    sel_book_str = st.selectbox("판매할 책 선택", book_options)
+    
+    # 3. 거래 버튼
+    if st.button("판매 등록 (주문 완료)"):
+        if target_custid and sel_book_str:
+            # 책 ID와 가격 파싱
+            bk_id = int(sel_book_str.split(":")[0])
+            bk_price = int(sel_book_str.split("(")[1].replace("원)", ""))
+            
+            # 주문 번호 생성
+            mx_oid = con.execute("SELECT MAX(orderid) FROM Orders").fetchone()[0]
+            nw_oid = mx_oid + 1 if mx_oid else 1
+            today_str = datetime.date.today().strftime("%Y-%m-%d")
+            
+            # INSERT
+            con.execute(f"INSERT INTO Orders VALUES ({nw_oid}, {target_custid}, {bk_id}, {bk_price}, '{today_str}')")
+            st.success(f"주문이 완료되었습니다! (주문번호: {nw_oid})")
+            time.sleep(1)
+            st.rerun()
